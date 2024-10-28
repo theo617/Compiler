@@ -1,0 +1,12 @@
+
+int main() {
+    int c;
+
+    // 测试字符常量，包含转义符
+    char charConst = '\f'; // 使用换页符转义字符常量
+    printf("Character constant with escape: '%c'\n", charConst);
+
+    printf("%d\n", c);
+
+    return c;
+}

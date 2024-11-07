@@ -11,7 +11,6 @@ public class Compiler {
         String lexerOutputPath = "lexer.txt";
         String parserOutputPath = "parser.txt";
         String errorOutputPath = "error.txt";
-
         try {
             Lexer lexer = new Lexer(inputFilePath);
             lexer.analyze();
@@ -26,7 +25,9 @@ public class Compiler {
             parser.analyze();
             parser.printParseAns();
             parser.writeErrors(errorOutputPath);
-            System.out.println("语法分析完成。");
+            System.out.println("语法和语义分析完成。");
+
+
 
 
         } catch (IOException e) {

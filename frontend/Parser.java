@@ -4,21 +4,51 @@ import node.*;
 import java.io.*;
 import java.util.*;
 
+import symbol.FuncSymbol;
+import symbol.Symbol;
+import symbol.SymbolTable;
+import symbol.SymbolRecord;
+import frontend.SemanticError;
+
 public class Parser {
+    private SymbolTable symbolTable;
     private List<Token> tokens;
     private int currentIndex;  // 当前token的索引
     private Token currentToken;
     private CompUnitNode compUnitNode;
     private BufferedWriter writer;
     private List<LexicalError> errors;
+    private List<SemanticError> semanticErrors;
+
+    // 作用域管理
+    private Stack<Integer> scopeStack;
+    private int nextScopeNum;
+
+    // 存储所有符号以便排序输出
+    private List<SymbolRecord> allSymbols;
 
     public Parser(Lexer lexer, String outputFilePath, String errorOutputFilePath) throws IOException {
+        this.symbolTable = new SymbolTable();
         this.tokens = lexer.getTokens();  // 获取所有tokens
-        errors = new ArrayList<>();
+        this.semanticErrors = new ArrayList<>();
         this.errors = lexer.getErrors();
         this.currentIndex = 0;
         this.currentToken = tokens.get(currentIndex);  // 获取第一个token
         this.writer = new BufferedWriter(new FileWriter(outputFilePath));  // 打开文件写入
+
+        // 初始化作用域管理
+        this.scopeStack = new Stack<>();
+        this.nextScopeNum = 1;
+        enterScope(); // 进入全局作用域
+
+        this.allSymbols = new ArrayList<>();
+    }
+
+    public SymbolTable getSymbolTable() {
+        return symbolTable;
+    }
+    public List<SemanticError> getSemanticErrors() {
+        return semanticErrors;
     }
 
     public CompUnitNode getCompUnitNode(){
@@ -45,6 +75,75 @@ public class Parser {
         return null;
     }
 
+    // 作用域管理方法
+    private void enterScope() {
+        scopeStack.push(nextScopeNum++);
+    }
+
+    private void exitScope() {
+        if (!scopeStack.isEmpty()) {
+            scopeStack.pop();
+        }
+    }
+
+        // 记录符号
+    private Symbol addSymbol(String name, Symbol.SymbolType type) {
+        if (name.equals("main")) {
+            // 不纳入符号表
+            return null;
+        }
+        int currentScope = scopeStack.peek();
+        for (SymbolRecord record : allSymbols) {
+            if (record.getScopeNum() == currentScope && record.getSymbol().getName().equals(name)) {
+                addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(),"b"));
+                return null;
+            }
+        }
+        Symbol symbol = new Symbol(name, type, currentScope);
+        allSymbols.add(new SymbolRecord(currentScope, symbol));
+        return symbol;
+    }
+
+    private FuncSymbol addFuncSymbol(String name, Symbol.SymbolType type, List<Symbol.SymbolType> symbolTypes) {
+        if (name.equals("main")) {
+            // 不纳入符号表
+            return null;
+        }
+        int currentScope = scopeStack.peek();
+        for (SymbolRecord record : allSymbols) {
+            if (record.getScopeNum() == currentScope && record.getSymbol().getName().equals(name)) {
+                addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(),"b"));
+                return null;
+            }
+        }
+        FuncSymbol symbol = new FuncSymbol(name, type, currentScope, symbolTypes);
+        allSymbols.add(new SymbolRecord(currentScope, symbol));
+        return symbol;
+    }
+
+    private Symbol lookupSymbol(String name) {
+        for (int i = scopeStack.size() - 1; i >= 0; i--) {
+            int scope = scopeStack.get(i);
+            for (SymbolRecord record : allSymbols) {
+                if (record.getScopeNum() == scope && record.getSymbol().getName().equals(name)) {
+                    return record.getSymbol();
+                }
+            }
+        }
+        return null;
+    }
+
+    private FuncSymbol lookupFuncSymbol(String name) {
+        for (int i = scopeStack.size() - 1; i >= 0; i--) {
+            int scope = scopeStack.get(i);
+            for (SymbolRecord record : allSymbols) {
+                if (record.getScopeNum() == scope && record.getSymbol().getName().equals(name)) {
+                    return (FuncSymbol) record.getSymbol();
+                }
+            }
+        }
+        return null;
+    }
 
     // 错误处理方法
     private void reportError(String message) {
@@ -85,12 +184,11 @@ public class Parser {
         String bType = parseBType();
 
         List<ConstDefNode> constDefs = new ArrayList<>();
-        constDefs.add(parseConstDef());
+        constDefs.add(parseConstDef(bType));
 
         while (currentToken.getType() == TokenType.COMMA) {
             nextToken();
-            //System.out.println("1 " + currentToken.getLineNumber() + " "+currentToken.getValue());
-            constDefs.add(parseConstDef());
+            constDefs.add(parseConstDef(bType));
         }
 
         expect(TokenType.SEMICN);
@@ -107,12 +205,13 @@ public class Parser {
         }
     }
     // 解析常量定义 ConstDef
-    public ConstDefNode parseConstDef() {
-        //System.out.println("def " + currentToken.getLineNumber() + " "+currentToken.getValue());
-        IdentNode ident = parseIdent();  // 解析 Ident
-
+    public ConstDefNode parseConstDef(String bType) {
+        Token ident = currentToken;
+        IdentNode identNode = parseIdent();  // 解析 Ident
+        boolean isArray = false;
         ConstExpNode constExp = null;
         if (currentToken.getType() == TokenType.LBRACK) {
+            isArray = true;
             nextToken();  // 跳过 '['
             constExp =  parseConstExp();  // 解析 ConstExp
             expect(TokenType.RBRACK);  // 期待 ']'
@@ -120,14 +219,23 @@ public class Parser {
         expect(TokenType.ASSIGN);  // 期待 '='
         ConstInitValNode initVal = parseConstInitVal();  // 解析 ConstInitVal
 
-        return new ConstDefNode(ident, constExp, initVal);
+        // 管理符号表
+        Symbol.SymbolType symbolType;
+        
+        if (bType.equals("int")) {
+            symbolType = isArray ? Symbol.SymbolType.ConstIntArray : Symbol.SymbolType.ConstInt;
+        } else if (bType.equals("char")) {
+            symbolType = isArray ? Symbol.SymbolType.ConstCharArray : Symbol.SymbolType.ConstChar;
+        } else {
+            symbolType = Symbol.SymbolType.Int; // 默认类型
+        }
+        addSymbol(ident.getValue(), symbolType);
+        
+        return new ConstDefNode(identNode, constExp, initVal);
     }
 
     // 解析常量初值 ConstInitVal
     public ConstInitValNode parseConstInitVal() {
-        //System.out.println("init " + currentToken.getLineNumber() + " "+currentToken.getValue());
-
-        // 直接使用 parseConstExp() 来处理带符号的数字
         if (currentToken.getType() == TokenType.LBRACE) {
             expect(TokenType.LBRACE);
             List<ConstExpNode> constExps = new ArrayList<>();
@@ -168,44 +276,53 @@ public class Parser {
     public VarDeclNode parseVarDecl() {
         String bType = parseBType();
         List<VarDefNode> varDefs = new ArrayList<>();
-        varDefs.add(parseVarDef());
-
+        varDefs.add(parseVarDef(bType));
         while (currentToken.getType() == TokenType.COMMA) {
             nextToken();
-            varDefs.add(parseVarDef());
+            varDefs.add(parseVarDef(bType));
         }
-
-        if (expect(TokenType.SEMICN)) {
-            return new VarDeclNode(bType, varDefs);
-        } else {
-            reportError("Expected ';' at the end of variable declaration.");
-            return null;
-        }
+        expect(TokenType.SEMICN);
+        return new VarDeclNode(bType, varDefs);
     }
 
-    public VarDefNode parseVarDef() {
+    public VarDefNode parseVarDef(String bType) {
+        
         String ident = currentToken.getValue();
         nextToken();
+        boolean isArray = false;
+        ConstExpNode constExp = null;
+        InitValNode initVal = null;
 
         if (currentToken.getType() == TokenType.LBRACK) {
+            isArray = true;
             nextToken();
-            ConstExpNode constExp = parseConstExp();
+            constExp = parseConstExp();
 
             if (expect(TokenType.RBRACK)) {
                 if (expect(TokenType.ASSIGN)) {
-                    InitValNode initVal = parseInitVal();
-                    return new VarDefNode(ident, constExp, initVal);
+                    initVal = parseInitVal();
                 }
-                return new VarDefNode(ident, constExp, null);
             } else {
                 reportError("Expected ']' in array definition.");
             }
         } else if (expect(TokenType.ASSIGN)) {
-            InitValNode initVal = parseInitVal();
-            return new VarDefNode(ident, null, initVal);
+            initVal = parseInitVal();
         }
 
-        return new VarDefNode(ident, null, null);
+        // 管理符号表
+        Symbol.SymbolType type;
+        if (bType.equals("int")) {
+            type = isArray ? Symbol.SymbolType.IntArray : Symbol.SymbolType.Int;
+        } else if (bType.equals("char")) {
+            type = isArray ? Symbol.SymbolType.CharArray : Symbol.SymbolType.Char;
+        } else {
+            type = Symbol.SymbolType.Int; // 默认类型
+        }
+
+        addSymbol(ident, type);
+
+
+        return new VarDefNode(ident, constExp, initVal);
     }
 
     public InitValNode parseInitVal() {
@@ -234,17 +351,43 @@ public class Parser {
         FuncTypeNode funcType = parseFuncType();
         Token funcName = currentToken;
         expect(TokenType.IDENFR);
-
         expect(TokenType.LPARENT);
-
+        //管理符号表
+        Symbol.SymbolType symbolType;
+        switch (funcType.getReturnType()) {
+            case "void":
+                symbolType = Symbol.SymbolType.VoidFunc;
+                break;
+            case "int":
+                symbolType = Symbol.SymbolType.IntFunc;
+                break;
+            case "char":
+                symbolType = Symbol.SymbolType.CharFunc;
+                break;
+            default:
+                symbolType = Symbol.SymbolType.IntFunc; // 默认
+        }
+        // addSymbol(funcName.getValue(), symbolType);
+        // 解析参数
+        List<Symbol.SymbolType> params = new ArrayList<>();
         FuncFParamNodes funcFParams = null;
         if (currentToken.getType() != TokenType.RPARENT) {
             funcFParams = parseFuncFParams();
+            params = funcFParams.getSymbolTypes();
         }
 
+        
         expect(TokenType.RPARENT);
-        BlockNode block = parseBlock();
 
+        addFuncSymbol(funcName.getValue(), symbolType, params);
+
+        // 进入函数的作用域
+        enterScope(); // 为函数参数和函数体进入一个新的作用域
+        nextScopeNum--;
+        BlockNode block = parseBlock();
+        
+        // 退出函数的作用域
+        exitScope();
         return new FuncDefNode(funcType, funcName, funcFParams, block);
     }
 
@@ -253,7 +396,12 @@ public class Parser {
         expect(TokenType.MAINTK);
         expect(TokenType.LPARENT);
         expect(TokenType.RPARENT);
+        
+        // 管理作用域但不纳入符号表
+        //enterScope(); // 进入 main 函数作用域
         BlockNode body = parseBlock();
+        //exitScope(); // 退出 main 函数作用域
+
         return new MainFuncDefNode("int", "main", body);
     }
 
@@ -282,25 +430,40 @@ public class Parser {
         String bType = parseBType();
         String ident = currentToken.getValue();
         nextToken();
-
+        boolean isArray = false;
         if (currentToken.getType() == TokenType.LBRACK) {
             expect(TokenType.LBRACK);
             expect(TokenType.RBRACK);
-            return new FuncFParamNode(bType, ident, true);
+            isArray = true;
+        }
+        // 管理符号表
+        Symbol.SymbolType type;
+        if (bType.equals("int")) {
+            type = isArray ? Symbol.SymbolType.IntArray : Symbol.SymbolType.Int;
+        } else if (bType.equals("char")) {
+            type = isArray ? Symbol.SymbolType.CharArray : Symbol.SymbolType.Char;
+        } else {
+            type = Symbol.SymbolType.Int; // 默认类型
         }
 
-        return new FuncFParamNode(bType, ident, false);
+        Symbol symbol = addSymbol(ident, type);
+        Symbol.SymbolType symbolType = symbol.getType();
+
+        return new FuncFParamNode(bType, ident, isArray, symbolType);
     }
 
     public BlockNode parseBlock() {
         expect(TokenType.LBRACE);
-
+        // 进入新作用域
+        enterScope();
         List<BlockItemNode> blockItems = new ArrayList<>();
         while (currentToken.getType() != TokenType.RBRACE) {
             blockItems.add(parseBlockItem());
         }
 
         expect(TokenType.RBRACE);
+        // 退出当前作用域
+        exitScope();
 
         return new BlockNode(blockItems);
     }
@@ -460,8 +623,11 @@ public class Parser {
 
     public LValNode parseLVal() {
         String ident = currentToken.getValue();
+        Symbol symbol = lookupSymbol(ident);
+        if (symbol == null) {
+            addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(), "c"));
+        }
         nextToken();
-
         ExpNode index = null;
         if (currentToken.getType() == TokenType.LBRACK) {
             expect(TokenType.LBRACK);
@@ -500,28 +666,29 @@ public class Parser {
     }
     public UnaryExpNode parseUnaryExp() {
         if (currentToken.getType() == TokenType.IDENFR && lookAhead(1).getType() == TokenType.LPARENT) {
-            //System.out.println("111 " + currentToken.getLineNumber() + " "+currentToken.getValue());
-            // Ident '(' [FuncRParams] ')'
+            
             String functionName = currentToken.getValue();
+            FuncSymbol symbol = lookupFuncSymbol(functionName);
+            if (symbol == null) {
+                addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(), "c"));
+            }
             nextToken(); // consume IDENT
             expect(TokenType.LPARENT);  // 匹配左括号
             FuncRParamsNode params = null;
 
             if (currentToken.getType() != TokenType.RPARENT) {
-                params = parseFuncRParams();
+                params = parseFuncRParams(true, symbol);
             }
 
             expect(TokenType.RPARENT);  // 匹配右括号
             return new UnaryExpNode(functionName, params);
         } else if (currentToken.getType() == TokenType.PLUS || currentToken.getType() == TokenType.MINU || currentToken.getType() == TokenType.NOT) {
-            //System.out.println("222 " + currentToken.getLineNumber() + " "+currentToken.getValue());
-            // UnaryOp UnaryExp
+            
             UnaryOpNode op = parseUnaryOp();
             UnaryExpNode expr = parseUnaryExp();
             return new UnaryExpNode(op, expr);  // 仍然返回一元表达式节点
         } else {
-            //System.out.println("333 " + currentToken.getLineNumber() + " "+currentToken.getValue());
-            // PrimaryExp
+            
             PrimaryExpNode primary = parsePrimaryExp();
             return new UnaryExpNode(primary);
         }
@@ -534,7 +701,7 @@ public class Parser {
         }
         return null;
     }
-    public FuncRParamsNode parseFuncRParams() {
+    public FuncRParamsNode parseFuncRParams(boolean isUse, FuncSymbol symbol) {
         List<ExpNode> expressions = new ArrayList<>();
         expressions.add(parseExp());
 
@@ -542,7 +709,11 @@ public class Parser {
             nextToken();  // 消费逗号
             expressions.add(parseExp());
         }
-
+        int expectedParams = symbol.getParamCount();
+        int actualParams = expressions.size();
+        if (expectedParams != actualParams) {
+            addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(), "d"));
+        }
         return new FuncRParamsNode(expressions);
     }
 
@@ -704,5 +875,24 @@ public class Parser {
     public void printParseAns() throws IOException {
         compUnitNode.printNode(this);  // 将 this 传入以便所有节点可以调用 write 方法
         closeWriter();  // 关闭文件
+        writeSymbolTable("symbol.txt");
     }
+
+    // 输出符号表
+    private void writeSymbolTable(String symbolFilePath) throws IOException {
+        // 按照作用域编号升序排序
+        allSymbols.sort(Comparator
+            .comparingInt(SymbolRecord::getScopeNum)
+            .thenComparingInt(SymbolRecord::getDeclarationOrder));
+
+        try (BufferedWriter symbolWriter = new BufferedWriter(new FileWriter(symbolFilePath))) {
+            for (SymbolRecord record : allSymbols) {
+                symbolWriter.write(record.getScopeNum() + " " + record.getSymbol().getName() + " " + record.getSymbol().getType());
+                symbolWriter.newLine();
+            }
+        }
+        System.out.println("符号表已输出到 " + symbolFilePath);
+    }
+
+
 }

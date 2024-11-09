@@ -2,12 +2,12 @@ package frontend;
 
 import node.*;
 import java.io.*;
+//import java.lang.ProcessBuilder.Redirect.Type;
 import java.util.*;
+import java.util.stream.Collectors;
 
-import symbol.FuncSymbol;
-import symbol.Symbol;
-import symbol.SymbolTable;
-import symbol.SymbolRecord;
+import symbol.*;
+import symbol.Symbol.SymbolType;
 import frontend.SemanticError;
 
 public class Parser {
@@ -19,6 +19,11 @@ public class Parser {
     private BufferedWriter writer;
     private List<LexicalError> errors;
     private List<SemanticError> semanticErrors;
+
+
+    private boolean currentFunctionHasReturn = false;
+    private Symbol.SymbolType currentFunctionReturnType = Symbol.SymbolType.VoidFunc;
+    private boolean insideLoop = false;
 
     // 作用域管理
     private Stack<Integer> scopeStack;
@@ -86,42 +91,46 @@ public class Parser {
         }
     }
 
-        // 记录符号
+    // 记录符号
     private Symbol addSymbol(String name, Symbol.SymbolType type) {
+        int currentScope = scopeStack.peek();
+        Symbol symbol = new Symbol(name, type, currentScope);
         if (name.equals("main")) {
             // 不纳入符号表
-            return null;
+            return symbol;
         }
-        int currentScope = scopeStack.peek();
+        
         for (SymbolRecord record : allSymbols) {
             if (record.getScopeNum() == currentScope && record.getSymbol().getName().equals(name)) {
                 addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(),"b"));
-                return null;
+                return symbol;
             }
         }
-        Symbol symbol = new Symbol(name, type, currentScope);
+        
         allSymbols.add(new SymbolRecord(currentScope, symbol));
         return symbol;
     }
 
     private FuncSymbol addFuncSymbol(String name, Symbol.SymbolType type, List<Symbol.SymbolType> symbolTypes) {
+        int currentScope = scopeStack.peek();
+        FuncSymbol symbol = new FuncSymbol(name, type, currentScope, symbolTypes);
         if (name.equals("main")) {
             // 不纳入符号表
-            return null;
+            return symbol;
         }
-        int currentScope = scopeStack.peek();
+        
         for (SymbolRecord record : allSymbols) {
             if (record.getScopeNum() == currentScope && record.getSymbol().getName().equals(name)) {
                 addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(),"b"));
-                return null;
+                return symbol;
             }
         }
-        FuncSymbol symbol = new FuncSymbol(name, type, currentScope, symbolTypes);
+        
         allSymbols.add(new SymbolRecord(currentScope, symbol));
         return symbol;
     }
 
-    private Symbol lookupSymbol(String name) {
+    public Symbol lookupSymbol(String name) {
         for (int i = scopeStack.size() - 1; i >= 0; i--) {
             int scope = scopeStack.get(i);
             for (SymbolRecord record : allSymbols) {
@@ -133,7 +142,7 @@ public class Parser {
         return null;
     }
 
-    private FuncSymbol lookupFuncSymbol(String name) {
+    public FuncSymbol lookupFuncSymbol(String name) {
         for (int i = scopeStack.size() - 1; i >= 0; i--) {
             int scope = scopeStack.get(i);
             for (SymbolRecord record : allSymbols) {
@@ -145,10 +154,64 @@ public class Parser {
         return null;
     }
 
+    // 判断函数是否有返回值
+    private boolean isFunctionWithReturn(Symbol.SymbolType type) {
+        return type == Symbol.SymbolType.IntFunc || type == Symbol.SymbolType.CharFunc;
+    }
+
+    /**
+ * 统计格式字符串中格式说明符的数量。
+ * 这里只处理简单的格式说明符，如 %d, %c 等。
+ *
+ * @param formatStr 格式字符串
+ * @return 格式说明符的数量
+ */
+private int countFormatSpecifiers(String formatStr) {
+    int count = 0;
+    boolean isPercent = false;
+    for (int i = 0; i < formatStr.length(); i++) {
+        char c = formatStr.charAt(i);
+        if (isPercent) {
+            if (c == 'd' || c == 'c') {
+                count++;
+            }
+            isPercent = false;
+        } else {
+            if (c == '%') {
+                isPercent = true;
+            }
+        }
+    }
+    return count;
+}
+
     // 错误处理方法
     private void reportError(String message) {
         System.err.println("Error at token " + currentToken + ": " + message + " atLine: " + currentToken.getLineNumber());
         // 这里可以进一步完善错误处理，比如记录错误文件等
+    }
+    
+    // 判断符号类型是否为常量
+    private boolean isConstant(Symbol.SymbolType type) {
+        return type == Symbol.SymbolType.ConstInt ||
+               type == Symbol.SymbolType.ConstChar ||
+               type == Symbol.SymbolType.ConstIntArray ||
+               type == Symbol.SymbolType.ConstCharArray;
+    }
+
+
+    //检查接下来出现的token，RPARENT )在LBRACE {之前
+    private boolean rparentBeforeLbrace() {
+        for (int i = currentIndex; i < tokens.size(); i++) {
+            Token token = tokens.get(i);
+            if (token.getType() == TokenType.RPARENT) {
+                return true;
+            }
+            if (token.getType() == TokenType.LBRACE) {
+                return false;
+            }
+        }
+        return false;
     }
 
     // 解析编译单元
@@ -369,22 +432,39 @@ public class Parser {
         }
         // addSymbol(funcName.getValue(), symbolType);
         // 解析参数
+        enterScope();
         List<Symbol.SymbolType> params = new ArrayList<>();
         FuncFParamNodes funcFParams = null;
-        if (currentToken.getType() != TokenType.RPARENT) {
+        if (currentToken.getType() != TokenType.RPARENT && currentToken.getType() != TokenType.LBRACE) {
+        //if (currentToken.getType() != TokenType.RPARENT) {
             funcFParams = parseFuncFParams();
             params = funcFParams.getSymbolTypes();
         }
+        nextScopeNum--;
+        exitScope();
 
-        
         expect(TokenType.RPARENT);
 
         addFuncSymbol(funcName.getValue(), symbolType, params);
 
+        // 设置当前函数的返回类型
+        currentFunctionReturnType = symbolType;
+
+        // 重置 return 标志
+        currentFunctionHasReturn = false;
         // 进入函数的作用域
         enterScope(); // 为函数参数和函数体进入一个新的作用域
         nextScopeNum--;
-        BlockNode block = parseBlock();
+        
+        BlockNode block = parseBlock(true);
+        // 检查有返回值的函数是否缺少 return 语句
+        if (isFunctionWithReturn(symbolType) && !currentFunctionHasReturn) {
+            addError(new LexicalError(tokens.get(currentIndex - 1).getLineNumber(), tokens.get(currentIndex - 1).getColumnNumber(), "g"));
+        }
+
+        // 重置当前函数信息
+        currentFunctionReturnType = Symbol.SymbolType.VoidFunc;
+        currentFunctionHasReturn = false;
         
         // 退出函数的作用域
         exitScope();
@@ -399,9 +479,16 @@ public class Parser {
         
         // 管理作用域但不纳入符号表
         //enterScope(); // 进入 main 函数作用域
-        BlockNode body = parseBlock();
+        currentFunctionReturnType= Symbol.SymbolType.IntFunc;
+        currentFunctionHasReturn = false;
+        BlockNode body = parseBlock(true);
         //exitScope(); // 退出 main 函数作用域
-
+        // 检查有返回值的函数是否缺少 return 语句
+        if (isFunctionWithReturn(Symbol.SymbolType.IntFunc) && !currentFunctionHasReturn) {
+            addError(new LexicalError(tokens.get(currentIndex).getLineNumber(), tokens.get(currentIndex).getColumnNumber(), "g"));
+        }
+        currentFunctionReturnType = Symbol.SymbolType.VoidFunc;
+        currentFunctionHasReturn = false;
         return new MainFuncDefNode("int", "main", body);
     }
 
@@ -452,7 +539,7 @@ public class Parser {
         return new FuncFParamNode(bType, ident, isArray, symbolType);
     }
 
-    public BlockNode parseBlock() {
+    public BlockNode parseBlock(boolean isFunc) {
         expect(TokenType.LBRACE);
         // 进入新作用域
         enterScope();
@@ -460,7 +547,10 @@ public class Parser {
         while (currentToken.getType() != TokenType.RBRACE) {
             blockItems.add(parseBlockItem());
         }
-
+        if(!isFunc){
+            currentFunctionHasReturn = false;
+        }
+        
         expect(TokenType.RBRACE);
         // 退出当前作用域
         exitScope();
@@ -477,8 +567,9 @@ public class Parser {
     }
 
     public StmtNode parseStmt() {
+        System.out.println("currentToken: " + currentToken.getType());
         if (currentToken.getType() == TokenType.LBRACE) {
-            BlockNode blockNode = parseBlock();  // 解析块
+            BlockNode blockNode = parseBlock(false);  // 解析块
             return new StmtNodeWithBlock(blockNode);  // 创建带 Block 的 StmtNode
         } else if (currentToken.getType() == TokenType.IFTK) {
             nextToken();
@@ -491,51 +582,48 @@ public class Parser {
                 nextToken();
                 falseBranch = parseStmt();
             }
+            currentFunctionHasReturn = false;
             return new IfStmtNode(cond, trueBranch, falseBranch);
         } else if (currentToken.getType() == TokenType.FORTK) {
+            System.out.println("222");
             return parseForStmt();  // 直接调用 parseForStmt
         } else if (currentToken.getType() == TokenType.BREAKTK) {
+            Token breakToken = currentToken;
             nextToken();
             expect(TokenType.SEMICN);
+            if (!insideLoop) {
+                addError(new LexicalError(breakToken.getLineNumber(), breakToken.getColumnNumber(), "m"));
+            }
             return new BreakStmtNode();
         } else if (currentToken.getType() == TokenType.CONTINUETK) {
+            Token continueToken = currentToken;
             nextToken();
             expect(TokenType.SEMICN);
+            if (!insideLoop) {
+                addError(new LexicalError(continueToken.getLineNumber(), continueToken.getColumnNumber(), "m"));
+            }
             return new ContinueStmtNode();
         } else if (currentToken.getType() == TokenType.RETURNTK) {
-            nextToken();
-            ExpNode returnValue = null;
-            if (currentToken.getType() != TokenType.SEMICN) {
-                returnValue = parseExp();
-            }
-            expect(TokenType.SEMICN);
-            return new ReturnStmtNode(returnValue);
+            return parseReturnStmt();  // 直接调用 parseReturnStmt
+            
         } else if (currentToken.getType() == TokenType.IDENFR) {
 
             // 保存当前位置以便回溯
             int assignIndex = currentIndex;
+            Token identToken = currentToken;
             LValNode lval = parseLVal();
             if (currentToken.getType() == TokenType.ASSIGN) {
                 nextToken();
                 if (currentToken.getType() == TokenType.GETINTTK) {
-                    nextToken();
-                    expect(TokenType.LPARENT);
-                    expect(TokenType.RPARENT);
-                    expect(TokenType.SEMICN);
-                    return new GetIntStmtNode(lval);
+                    return parseGetint(lval);
                 } else if (currentToken.getType() == TokenType.GETCHARTK) {
-                    nextToken();
-                    expect(TokenType.LPARENT);
-                    expect(TokenType.RPARENT);
-                    expect(TokenType.SEMICN);
-                    return new GetCharStmtNode(lval);
+                    return parseGetchar(lval);
                 } else {
-                    ExpNode exp = parseExp();
-                    expect(TokenType.SEMICN);
-                    return new AssignStmtNode(lval, exp);
+                    //LVal '=' Exp ';'
+                    return parseAssignStmt(lval,identToken);
                 }
             } else {
-                // 如果没有发现赋值号，则回溯并当作 Exp 处理
+                //  [Exp] ';' 
                 currentIndex = assignIndex;
                 currentToken = tokens.get(currentIndex);
                 ExpNode expNode = parseExp();
@@ -543,10 +631,16 @@ public class Parser {
                 return new ExpStmtNode(expNode);
             }
         } else if (currentToken.getType() == TokenType.PRINTFTK) {
+            Token printfToken = currentToken;
             nextToken();
             expect(TokenType.LPARENT);
             Token stringConst = currentToken;
             expect(TokenType.STRCON);
+
+            // 提取格式字符串内容（去除引号）
+            String formatStr = stringConst.getValue().substring(1, stringConst.getValue().length() - 1);
+            int formatSpecCount = countFormatSpecifiers(formatStr);
+
             List<ExpNode> args = new ArrayList<>();
             while (currentToken.getType() == TokenType.COMMA) {
                 nextToken();
@@ -554,6 +648,10 @@ public class Parser {
             }
             expect(TokenType.RPARENT);
             expect(TokenType.SEMICN);
+            // 比较格式说明符数量与表达式数量
+            if (formatSpecCount != args.size()) {
+                addError(new LexicalError(printfToken.getLineNumber(), printfToken.getColumnNumber(), "l"));
+            }
             return new PrintfStmtNode(new StringConstNode(stringConst), args);
         } else {
             if (currentToken.getType() == TokenType.SEMICN) {
@@ -567,20 +665,119 @@ public class Parser {
         }
     }
 
+    public AssignStmtNode parseAssignStmt(LValNode lVal, Token identToken) {
+        // 检查 LVal 是否为常量
+        Symbol symbol = lookupSymbol(lVal.getIdent());
+        if(symbol !=null){
+            Symbol.SymbolType symbolType = symbol.getType();
+            if (isConstant(symbolType)) {
+                addError(new LexicalError(identToken.getLineNumber(), identToken.getColumnNumber(), "h"));
+            }
+        }
+        ExpNode expr = parseExp();
+        expect(TokenType.SEMICN); // 解析 ';'
+    
+        
+    
+        return new AssignStmtNode(lVal, expr);
+    }
+
+    public GetIntStmtNode parseGetint(LValNode lVal) {
+        // 检查 LVal 是否为常量
+        Symbol symbol = lookupSymbol(lVal.getIdent());
+        if(symbol !=null){
+            Symbol.SymbolType symbolType = symbol.getType();
+            if (isConstant(symbolType)) {
+                addError(new LexicalError(tokens.get(currentIndex - 2).getLineNumber(), tokens.get(currentIndex - 2).getColumnNumber(), "h"));
+            }
+        }
+        nextToken();
+        expect(TokenType.LPARENT);
+        expect(TokenType.RPARENT);
+        expect(TokenType.SEMICN);
+        
+        return new GetIntStmtNode(lVal);
+    }
+
+    public GetCharStmtNode parseGetchar(LValNode lVal) {
+        // 检查 LVal 是否为常量
+        Symbol symbol = lookupSymbol(lVal.getIdent());
+        if(symbol !=null){
+            Symbol.SymbolType symbolType = symbol.getType();
+            if (isConstant(symbolType)) {
+                addError(new LexicalError(tokens.get(currentIndex - 2).getLineNumber(), tokens.get(currentIndex - 2).getColumnNumber(), "h"));
+            }
+        }
+        nextToken();
+        expect(TokenType.LPARENT);
+        expect(TokenType.RPARENT);
+        expect(TokenType.SEMICN);
+        
+        return new GetCharStmtNode(lVal);
+    }
+    
+    
+
+    public ReturnStmtNode parseReturnStmt() {
+        Token returnToken = currentToken;
+        nextToken(); // consume 'return'
+
+        ExpNode expr = null;
+        if (currentToken.getType() != TokenType.SEMICN) {
+            expr = parseExp();
+        }
+        expect(TokenType.SEMICN); // ';'
+        //System.out.println("currentFunctionReturnType: " +currentFunctionReturnType + ", currentFunctionReturnType: " + currentFunctionReturnType + ", line: " + returnToken.getLineNumber());
+
+        // 检查 return 语句的正确性
+        if (isFunctionWithReturn(currentFunctionReturnType)) {
+            if (expr == null) {
+                // 有返回值的函数，return 语句缺少表达式
+                //addError(new LexicalError(returnToken.getLineNumber(), returnToken.getColumnNumber(), "g"));
+            } else {
+                // 标记当前函数存在 return 语句
+                currentFunctionHasReturn = true;
+            }
+        } else {
+            if (expr != null) {
+                // 无返回值的函数，不应有返回值
+                addError(new LexicalError(returnToken.getLineNumber(), returnToken.getColumnNumber(), "f"));
+            }
+        }
+
+        return new ReturnStmtNode(expr);
+    }
+
     public ForStmtNode parseForStmt() {
-        //System.out.println("for " + currentToken.getLineNumber() + " "+currentToken.getValue());
+        System.out.println("111");
+
+        insideLoop = true;
         expect(TokenType.FORTK);
         expect(TokenType.LPARENT);
 
         LValNode initLVal = null;
         ExpNode initExp = null;
+        Token LValToken = null;
         if (currentToken.getType() == TokenType.IDENFR) {
+            LValToken = currentToken;
             initLVal = parseLVal();
             if (currentToken.getType() == TokenType.ASSIGN) {
                 nextToken();
                 initExp = parseExp();
             }
+        }//System.out.println("initLVal: " + initLVal.getIdent());
+        if(initLVal != null){
+            System.out.println("initLVal: " + initLVal.getIdent());
+            // 检查 initLVal 是否为常量
+            Symbol symbol = lookupSymbol(initLVal.getIdent());
+            if(symbol !=null){
+                Symbol.SymbolType symbolType = symbol.getType();
+                if (isConstant(symbolType)) {
+                    addError(new LexicalError(LValToken.getLineNumber(), LValToken.getColumnNumber(), "h"));
+                }
+            }
         }
+
         if(currentToken.getType() == TokenType.SEMICN){
             nextToken();
         }
@@ -597,17 +794,31 @@ public class Parser {
 
         LValNode iterLVal = null;
         ExpNode iterExp = null;
+        Token iterLValToken = null;
         if (currentToken.getType() != TokenType.RPARENT) {
+            iterLValToken = currentToken;
             iterLVal = parseLVal();
             if (currentToken.getType() == TokenType.ASSIGN) {
                 nextToken();
                 iterExp = parseExp();
             }
         }
+        if (iterLVal != null) {
+            // 检查 iterLVal 是否为常量
+            Symbol symbol = lookupSymbol(iterLVal.getIdent());
+            if(symbol !=null){
+                Symbol.SymbolType symbolType = symbol.getType();
+                if (isConstant(symbolType)) {
+                    addError(new LexicalError(iterLValToken.getLineNumber(), iterLValToken.getColumnNumber(), "h"));
+                }
+        }
+        }
+
         expect(TokenType.RPARENT);
 
         StmtNode body = parseStmt();
-
+        insideLoop = false;
+        currentFunctionHasReturn = false;
         return new ForStmtNode(initLVal, initExp, condition, iterLVal, iterExp, body);
     }
 
@@ -677,9 +888,10 @@ public class Parser {
             FuncRParamsNode params = null;
 
             if (currentToken.getType() != TokenType.RPARENT) {
+            //if (currentToken.getType() != TokenType.RPARENT) {  
                 params = parseFuncRParams(true, symbol);
             }
-
+            
             expect(TokenType.RPARENT);  // 匹配右括号
             return new UnaryExpNode(functionName, params);
         } else if (currentToken.getType() == TokenType.PLUS || currentToken.getType() == TokenType.MINU || currentToken.getType() == TokenType.NOT) {
@@ -704,16 +916,53 @@ public class Parser {
     public FuncRParamsNode parseFuncRParams(boolean isUse, FuncSymbol symbol) {
         List<ExpNode> expressions = new ArrayList<>();
         expressions.add(parseExp());
-
         while (currentToken.getType() == TokenType.COMMA) {
             nextToken();  // 消费逗号
             expressions.add(parseExp());
         }
+
         int expectedParams = symbol.getParamCount();
         int actualParams = expressions.size();
         if (expectedParams != actualParams) {
             addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(), "d"));
+        } else {
+        // 检查每个实参的类型
+        List<Type> actualTypes = new ArrayList<>();
+        for (ExpNode expr : expressions) {
+            actualTypes.add(expr.getType(this));
         }
+        List<Type> expectedTypes = symbol.getSymbolTypes().stream()
+                .map(symbolType -> {
+                    switch (symbolType) {
+                        case Int:
+                            return Type.INT;
+                        case Char:
+                            return Type.CHAR;
+                        case IntArray:
+                            return Type.INT_ARRAY;
+                        case CharArray:
+                            return Type.CHAR_ARRAY;
+                        default:
+                            return Type.UNKNOWN;
+                    }
+                })
+                .collect(Collectors.toList());
+
+        for (int i = 0; i < actualTypes.size(); i++) {
+            Type actual = actualTypes.get(i);
+            Type expected = expectedTypes.get(i);
+            if (!isTypeCompatible(actual, expected)) {
+                if((actual == Type.INT && expected == Type.CHAR) || (actual == Type.CHAR && expected == Type.INT)){
+                    continue;
+                }
+                addError(new LexicalError(currentToken.getLineNumber(), currentToken.getColumnNumber(), "e"));
+                System.out.println("err: actual: " + actual + ", expected: " + expected + ", currentToken: " + currentToken.getValue() + ", line: " + currentToken.getLineNumber());
+                
+            }
+            System.out.println("actual: " + actual + ", expected: " + expected + ", currentToken: " + currentToken.getValue() + ", line: " + currentToken.getLineNumber());
+        }
+    }
+
         return new FuncRParamsNode(expressions);
     }
 
@@ -809,6 +1058,20 @@ public class Parser {
         return new ConstExpNode(addExp);
     }
 
+
+    private boolean isTypeCompatible(Type actual, Type expected) {
+        if (expected == Type.INT) {
+            return actual == Type.INT;
+        } else if (expected == Type.CHAR) {
+            return actual == Type.CHAR;
+        } else if (expected == Type.INT_ARRAY) {
+            return actual == Type.INT_ARRAY;
+        } else if (expected == Type.CHAR_ARRAY) {
+            return actual == Type.CHAR_ARRAY;
+        }
+        return false;
+    }
+
     // 匹配某个特定类型的token
     private boolean expect(TokenType expectedType) {
         if (currentToken.getType() == expectedType) {
@@ -840,6 +1103,10 @@ public class Parser {
 
         for (LexicalError error : errors) {
             if (error.getLineNumber() == newError.getLineNumber()) {
+                if(error.getErrorCode().equals("d") && newError.getErrorCode().equals("j")){
+                    error.setErrorCode("j");
+                    return;
+                }
                 return;
             }
         }

@@ -27,6 +27,10 @@ public class LexicalError {
         return errorCode;
     }
 
+    public void setErrorCode(String errorCode) {
+        this.errorCode = errorCode;
+    }
+
     // 返回错误信息的字符串表示形式
     @Override
     public String toString() {

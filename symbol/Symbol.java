@@ -41,4 +41,21 @@ public class Symbol {
         ConstCharArray, CharArray,
         ConstIntArray, IntArray
     }
+ 
+        // 方便类型转换
+        public Type getActualType() {
+            switch (this.type) {
+                case Int:
+                    return Type.INT;
+                case Char:
+                    return Type.CHAR;
+                case IntArray:
+                    return Type.INT_ARRAY;
+                case CharArray:
+                    return Type.CHAR_ARRAY;
+                default:
+                    return Type.UNKNOWN;
+            }
+        }
+            
 }

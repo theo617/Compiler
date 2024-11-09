@@ -1,7 +1,7 @@
-1 const1 ConstInt
-1 const2 ConstInt
-1 change1 Int
-1 var1 Int
-1 var2 Int
-1 gets1 IntFunc
-3 c Int
+1 my_print VoidFunc
+1 f CharFunc
+2 param Int
+3 a Int
+6 c Int
+7 a Int
+9 c Int

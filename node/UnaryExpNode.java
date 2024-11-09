@@ -1,7 +1,12 @@
 package node;
 
 import frontend.Parser;
+import frontend.SemanticError;
+
 import java.io.IOException;
+
+import symbol.FuncSymbol;
+import symbol.Type;
 
 public class UnaryExpNode {
     private String functionName;
@@ -9,6 +14,7 @@ public class UnaryExpNode {
     private UnaryOpNode unaryOp;
     private UnaryExpNode unaryExp;
     private PrimaryExpNode primaryExp;
+    private Type type; // 新增类型属性
 
     // 构造器1：函数调用
     public UnaryExpNode(String functionName, FuncRParamsNode funcRParams) {
@@ -27,6 +33,42 @@ public class UnaryExpNode {
         this.primaryExp = primaryExp;
     }
 
+    public Type getType(Parser parser) {
+        if (functionName != null) {
+            // 函数调用的返回类型
+            FuncSymbol funcSymbol = parser.lookupFuncSymbol(functionName);
+            if (funcSymbol != null) {
+                // 假设函数返回类型存储在 funcSymbol 中，可以根据实际情况调整
+                // 这里假设 void 函数返回 UNKNOWN
+                switch (funcSymbol.getType()) {
+                    case VoidFunc:
+                        this.type = Type.UNKNOWN;
+                        break;
+                    case IntFunc:
+                        this.type = Type.INT;
+                        break;
+                    case CharFunc:
+                        this.type = Type.CHAR;
+                        break;
+                    default:
+                        this.type = Type.UNKNOWN;
+                }
+            } else {
+                this.type = Type.UNKNOWN;
+            }
+        } else if (unaryOp != null) {
+            this.type = unaryExp.getType(parser);
+        } else if (primaryExp != null) {
+            this.type = primaryExp.getType(parser);
+        }
+        //System.out.println("UnaryExpNode: " + this.type);
+        return type;
+    }
+
+    public void setType(Type type) {
+        this.type = type;
+    }
+
 
     public void printNode(Parser parser) throws IOException {
         if (functionName != null) {
@@ -36,6 +78,8 @@ public class UnaryExpNode {
                 funcRParams.printNode(parser);
             }
             parser.write("RPARENT )");
+
+
         } else if (unaryOp != null) {
             unaryOp.printNode(parser);
             unaryExp.printNode(parser);

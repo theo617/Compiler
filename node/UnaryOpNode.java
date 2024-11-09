@@ -13,6 +13,10 @@ public class UnaryOpNode {
         this.operator = operator;
     }
 
+    public Token getOperator() {
+        return operator;
+    }
+
     public void printNode(Parser parser) throws IOException {
         if(Objects.equals(operator.getValue(), "+")){
             parser.write("PLUS +");
